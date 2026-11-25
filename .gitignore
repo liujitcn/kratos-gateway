@@ -30,5 +30,18 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
+
+# AI
+.mimosa/
+.workbuddy/
+superpowers/
+audit/
+gui-test-screenshots/
+.claude/
+.zcode/
+.superpowers/
+.codex-workflow/
+plans/
+prototypes/
