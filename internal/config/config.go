@@ -1,11 +1,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
-
-	configv1 "github.com/liujitcn/kratos-kit/api/gen/go/config/v1"
 )
 
 // Duration 兼容 "10s" 字符串写法的时长配置字段。
@@ -35,12 +35,10 @@ func (d Duration) Std() time.Duration {
 	return time.Duration(d)
 }
 
-// Config 网关完整配置（configs/config.yaml 的结构映射）。
+// Config 表示独立的 gateway 配置块。
 type Config struct {
 	// Server 网关 HTTP 服务配置。
 	Server Server `json:"server"`
-	// Registry 注册中心配置（与 kratos-admin registry.yaml 同构）。
-	Registry Registry `json:"registry"`
 	// Catalog 服务自描述路由聚合配置（v0.3）。
 	Catalog Catalog `json:"catalog"`
 	// Routes 静态路由配置。
@@ -49,8 +47,6 @@ type Config struct {
 
 // Server 网关 HTTP 服务配置。
 type Server struct {
-	// Addr 监听地址。
-	Addr string `json:"addr"`
 	// ReadHeaderTimeout 请求头读取超时（防 slowloris 慢连接；禁止设置全局 Read/WriteTimeout，保 SSE/WS 长连接）。
 	ReadHeaderTimeout Duration `json:"read_header_timeout"`
 	// IdleTimeout 空闲连接超时。
@@ -61,42 +57,6 @@ type Server struct {
 	Stats *bool `json:"stats"`
 	// Metrics 是否开放 /metrics Prometheus 端点（默认开放）。
 	Metrics *bool `json:"metrics"`
-	// Register 网关自身是否注册到注册中心（取决于部署形态，默认关闭）。
-	Register bool `json:"register"`
-}
-
-// Registry 注册中心配置：字段与 kratos-admin registry.yaml 同构，加载后转换为 kit 工厂结构。
-type Registry struct {
-	// Type 注册中心类型（consul / etcd / nacos 等，由 kit 工厂分发）。
-	Type string `json:"type"`
-	// Consul Consul 配置（type=consul 时生效）。
-	Consul *Consul `json:"consul"`
-}
-
-// Consul Consul 注册中心配置。
-type Consul struct {
-	// Address Consul 服务地址（host:port）。
-	Address string `json:"address"`
-	// Scheme 访问协议（http/https）。
-	Scheme string `json:"scheme"`
-	// Token Consul ACL 访问令牌。
-	Token string `json:"token"`
-	// HealthCheck 是否启用 Consul 健康检查。
-	HealthCheck bool `json:"health_check"`
-}
-
-// KitRegistry 转换为 kit registry 工厂所需的 configv1.Registry。
-func (r *Registry) KitRegistry() *configv1.Registry {
-	kit := &configv1.Registry{Type: r.Type}
-	if r.Consul != nil {
-		kit.Consul = &configv1.Registry_Consul{
-			Scheme:      r.Consul.Scheme,
-			Address:     r.Consul.Address,
-			HealthCheck: r.Consul.HealthCheck,
-			Token:       r.Consul.Token,
-		}
-	}
-	return kit
 }
 
 // Catalog 服务自描述路由聚合配置（v0.3）。
@@ -179,11 +139,28 @@ type Breaker struct {
 	OpenDuration Duration `json:"open_duration"`
 }
 
+// decodeConfig 将网关配置树解码为运行时配置，拒绝未知字段。
+func decodeConfig(values map[string]any) (*Config, error) {
+	data, err := json.Marshal(values)
+	if err != nil {
+		return nil, fmt.Errorf("配置包含无法转换的 YAML 值: %w", err)
+	}
+	cfg := &Config{}
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.DisallowUnknownFields()
+	if err = decoder.Decode(cfg); err != nil {
+		// 自定义解码器的错误可能引用展开后的值，只报告字段名或结构错误。
+		if typeErr, ok := errors.AsType[*json.UnmarshalTypeError](err); ok && typeErr.Field != "" {
+			return nil, fmt.Errorf("配置字段 %s 类型无效", typeErr.Field)
+		}
+		return nil, errors.New("配置含未知字段或字段格式无效")
+	}
+	applyDefaults(cfg)
+	return cfg, nil
+}
+
 // applyDefaults 填充各字段缺省值（仅未显式配置时生效；路由 target 的 scheme/lb 缺省由 builder 兜底）。
 func applyDefaults(cfg *Config) {
-	if cfg.Server.Addr == "" {
-		cfg.Server.Addr = ":8080"
-	}
 	if cfg.Server.ReadHeaderTimeout == 0 {
 		cfg.Server.ReadHeaderTimeout = Duration(10 * time.Second)
 	}

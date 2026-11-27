@@ -45,3 +45,7 @@ gui-test-screenshots/
 .codex-workflow/
 plans/
 prototypes/
+
+# 本地构建和 bootstrap 生成的根密钥
+/bin/
+/configs/root.key

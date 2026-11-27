@@ -6,3 +6,7 @@ README.md
 LICENSE
 Dockerfile
 .dockerignore
+
+bin/
+configs/root.key
+.env

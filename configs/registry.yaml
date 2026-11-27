@@ -1,0 +1,5 @@
+registry:
+  type: consul
+  consul:
+    # 省略地址和令牌时，Consul 客户端读取 CONSUL_HTTP_ADDR、CONSUL_HTTP_TOKEN。
+    health_check: true

@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+package gateway.config.v1;
+
+import "google/protobuf/struct.proto";
+
+option go_package = "github.com/liujitcn/kratos-gateway/api/gen/go/gateway/config/v1;configv1";
+
+// GatewayConfigWrapper 注册独立的网关配置块，字段由网关按路由语义校验。
+message GatewayConfigWrapper {
+  google.protobuf.Struct gateway = 1; // 网关专有配置
+}
