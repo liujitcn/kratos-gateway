@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 
@@ -61,6 +62,15 @@ func (t *DiscoveryTarget) Select(ctx context.Context) (selector.Node, selector.D
 	}
 	t.mu.Unlock()
 	return t.upstream.selectNode(ctx, t.sel, t.matches)
+}
+
+// HasDiscoveredNodes 判断当前快照是否存在匹配本路由的健康节点，用于就绪探针。
+func (t *DiscoveryTarget) HasDiscoveredNodes() bool {
+	nodes := t.upstream.currentNodes()
+	if t.matches == nil {
+		return len(nodes) > 0
+	}
+	return slices.ContainsFunc(nodes, t.matches)
 }
 
 // Key 返回管理器缓存键（热更新时计算路由引用集合）。

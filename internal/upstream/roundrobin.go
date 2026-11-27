@@ -1,6 +1,3 @@
-// Package upstream 维护服务发现节点表与负载均衡选择器：
-// Manager 统一缓存共享 Upstream（Watch 同步循环、节点快照和熔断状态）。
-// 自描述路由各自维护轮询状态，发现快照变化时更新选择器的候选节点。
 package upstream
 
 import (

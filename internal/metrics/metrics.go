@@ -1,4 +1,3 @@
-// Package metrics 提供 Prometheus 指标定义、采集入口与 /metrics 端点处理器。
 package metrics
 
 import (

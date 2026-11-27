@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"io"
@@ -21,6 +22,7 @@ import (
 
 	"github.com/go-kratos/kratos/v3/registry"
 	"github.com/go-kratos/kratos/v3/selector"
+	consulapi "github.com/hashicorp/consul/api"
 
 	"github.com/liujitcn/kratos-gateway/internal/config"
 	"github.com/liujitcn/kratos-gateway/internal/route"
@@ -250,7 +252,7 @@ func TestRunCatalogSkipsExcludedService(t *testing.T) {
 		case "/v1/catalog/services":
 			_, _ = io.WriteString(w, `{"app-service":[],"infra-service":[]}`)
 		case "/v1/health/service/app-service":
-			_, _ = io.WriteString(w, `[{"Service":{"ID":"app","Service":"app-service","Meta":{"gateway.routes":"/app"}}}]`)
+			_, _ = io.WriteString(w, `[{"Service":{"ID":"app","Service":"app-service","Meta":{"gateway_routes":"/app"}}}]`)
 		default:
 			excluded.Add(1)
 			w.WriteHeader(http.StatusForbidden)
@@ -356,6 +358,44 @@ func TestConsulWatchRecoversAndClearsNodes(t *testing.T) {
 	waitForConsulNodes(t, u, 0)
 	if _, _, err = u.Select(t.Context()); !errors.Is(err, selector.ErrNoAvailable) {
 		t.Fatalf("成功的空快照应清空选择器，实际 %v", err)
+	}
+}
+
+// TestConsulRegisterReadinessCheck 验证启用 Consul 健康检查时同时登记就绪探针。
+func TestConsulRegisterReadinessCheck(t *testing.T) {
+	registered := make(chan consulapi.AgentServiceRegistration, 1)
+	consul := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/agent/service/register" {
+			var service consulapi.AgentServiceRegistration
+			if err := json.NewDecoder(r.Body).Decode(&service); err != nil {
+				t.Error(err)
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			registered <- service
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(consul.Close)
+	cfg := &config.Config{
+		Server:   config.Server{Register: true},
+		Registry: config.Registry{Type: "consul", Consul: &config.Consul{Address: consul.URL, HealthCheck: true}},
+	}
+	deregister := registerSelf(cfg, 8080, slog.New(slog.DiscardHandler))
+	if deregister == nil {
+		t.Fatal("网关自注册失败")
+	}
+	defer deregister()
+	select {
+	case service := <-registered:
+		for _, check := range service.Checks {
+			if check.HTTP == "http://"+net.JoinHostPort(service.Address, "8080")+"/readyz" && check.Status == "critical" {
+				return
+			}
+		}
+		t.Fatal("Consul 注册缺少初始为 critical 的 HTTP 就绪探针")
+	default:
+		t.Fatal("未收到 Consul 注册请求")
 	}
 }
 

@@ -1,5 +1,3 @@
-// Package filter 提供全局过滤器链：恢复（Recovery）→ 访问日志（AccessLog）→ 指标采集（Metrics）。
-// 访问日志最先包装 ResponseWriter 记录状态码，内层过滤器（指标）复用该记录器。
 package filter
 
 import (

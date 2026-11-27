@@ -29,12 +29,15 @@ go run ./cmd/gateway -conf configs/config.yaml
 
 # 验证
 curl http://127.0.0.1:8080/healthz     # 存活探针
+curl http://127.0.0.1:8080/readyz      # 接流探针
 curl http://127.0.0.1:8080/metrics     # Prometheus 指标
 curl -i http://127.0.0.1:8080/api/v1/base/captcha   # 转发（响应头 X-GW-Upstream 标注实际命中节点）
 
 # 容器化
 docker build -t kratos-gateway . && docker run -p 8080:8080 -e REGISTRY_TOKEN=xxx kratos-gateway
 ```
+
+滚动部署使用 `/readyz` 检查接流状态。启用服务目录时，网关等待首个目录快照发布。每条已发布的发现路由都须至少有一个匹配节点。静态 URL 不做连通性探测。容器健康检查默认使用 `/readyz`。自注册并通过 Consul 分发流量时，设置 `registry.consul.health_check: true`，负载均衡只选健康实例。停机时先摘流，再由网关注销并排空在途请求。
 
 `/gw-stats` 默认关闭。设置 `server.stats: true` 并重启后，可以通过该端点查看路由表和上游命中统计。
 
@@ -46,10 +49,10 @@ internal/config/      YAML 配置加载、${VAR} 字符串展开、路由快照�
 internal/route/       Route/Predicate/Filter 模型、Router（段前缀最长优先）、内置路由过滤器
 internal/upstream/    Consul 健康订阅、UpstreamManager、负载均衡、节点级被动熔断
 internal/forward/     ReverseProxy 转发（SSE 透传、X-GW-Upstream、幂等重试）
-internal/catalog/     服务自描述路由聚合（Consul 元数据 gateway.routes）
+internal/catalog/     服务自描述路由聚合（Consul 元数据 gateway_routes）
 internal/builder/     Config → 运行时路由表装配（含灰度权重区间分配）
 internal/filter/      全局过滤器：Recovery / AccessLog / Metrics
-internal/server/      HTTP 服务组装、/gw-stats、/metrics、/healthz、优雅停机
+internal/server/      HTTP 服务组装、/gw-stats、/metrics、/healthz、/readyz、优雅停机
 ```
 
 ## 演进路线（当前全部已实现）

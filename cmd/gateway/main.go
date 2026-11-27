@@ -1,4 +1,3 @@
-// kratos-gateway 南北向 API 网关入口：加载配置、装配路由、启动服务与热更新、优雅停机。
 package main
 
 import (
@@ -65,6 +64,7 @@ func main() {
 		os.Exit(1)
 	}
 
+	srv := server.New(cfg, router, mgr, logger)
 	routingCfg := *cfg
 	var workers sync.WaitGroup
 	// 装配状态由多个 goroutine（catalog 回调 / 配置热更新 / 兜底重试）并发读写，统一加锁
@@ -82,6 +82,9 @@ func main() {
 		}
 		updated, err := rebuildRoutes(&routingCfg, catalogRoutes, router, mgr, logger)
 		rebuildPending = !updated
+		if updated && catalogRoutes != nil {
+			srv.MarkCatalogReady()
+		}
 		if err != nil {
 			logger.Error("装配路由表失败，保留旧表，将定时重试", "error", err)
 		}
@@ -126,7 +129,6 @@ func main() {
 		})
 	})
 
-	srv := server.New(cfg, router, mgr, logger)
 	runErr := make(chan error, 1)
 	go func() {
 		runErr <- srv.Serve(listener)
@@ -139,6 +141,7 @@ func main() {
 	case <-ctx.Done():
 	}
 
+	srv.BeginDrain()
 	stop()
 	if serveErr != nil {
 		logger.Error("网关运行失败", "error", serveErr)
@@ -219,7 +222,7 @@ func runCatalog(ctx context.Context, cfg *config.Config, logger *slog.Logger, fn
 	c.Run(ctx, fn)
 }
 
-// registerSelf 按实际监听端口注册网关并返回停机时使用的注销函数。
+// registerSelf 按实际监听端口注册网关，为启用健康检查的 Consul 注册附加接流探针。
 func registerSelf(cfg *config.Config, port int, logger *slog.Logger) func() {
 	if !cfg.Server.Register {
 		return nil
@@ -228,13 +231,20 @@ func registerSelf(cfg *config.Config, port int, logger *slog.Logger) func() {
 	if drain := cfg.Server.ShutdownTimeout.Std(); drain > 0 {
 		timeout = min(timeout, drain)
 	}
+	host := hostname()
+	endpoint := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
 	var reg registry.Registrar
 	var err error
 	if cfg.Registry.Type == string(kitreg.Consul) && cfg.Registry.Consul != nil {
 		var client *consulapi.Client
 		client, err = newConsulClient(cfg.Registry.Consul, timeout)
 		if err == nil {
-			reg = kitconsul.New(client, kitconsul.WithHealthCheck(cfg.Registry.Consul.HealthCheck))
+			reg = kitconsul.New(client,
+				kitconsul.WithHealthCheck(cfg.Registry.Consul.HealthCheck),
+				kitconsul.WithServiceCheck(&consulapi.AgentServiceCheck{
+					HTTP: endpoint + "/readyz", Interval: "2s", Timeout: "1s", Status: "critical",
+				}),
+			)
 		}
 	} else {
 		reg, err = kitreg.NewRegistrar(cfg.Registry.KitRegistry())
@@ -247,11 +257,10 @@ func registerSelf(cfg *config.Config, port int, logger *slog.Logger) func() {
 		logger.Error("缺少注册中心配置，跳过网关自注册")
 		return nil
 	}
-	host := hostname()
 	instance := &registry.ServiceInstance{
 		ID:        fmt.Sprintf("kratos-gateway-%s-%d", host, port),
 		Name:      kitreg.NormalizeForRegistry("kratos-gateway", cfg.Registry.Type),
-		Endpoints: []string{"http://" + net.JoinHostPort(host, strconv.Itoa(port))},
+		Endpoints: []string{endpoint},
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()

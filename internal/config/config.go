@@ -1,4 +1,3 @@
-// Package config 定义网关配置结构，并负责从 YAML 文件加载（含 ${VAR} 环境变量占位符展开）。
 package config
 
 import (
@@ -104,7 +103,7 @@ func (r *Registry) KitRegistry() *configv1.Registry {
 type Catalog struct {
 	// Enabled 是否启用服务目录聚合。
 	Enabled bool `json:"enabled"`
-	// ServicePrefixes 只聚合服务名命中这些前缀的服务（空表示聚合全部声明了 gateway.routes 的服务）。
+	// ServicePrefixes 只聚合服务名命中这些前缀的服务（空表示聚合全部声明了 gateway_routes 的服务）。
 	ServicePrefixes []string `json:"service_prefixes"`
 	// PollInterval 目录轮询间隔。
 	PollInterval Duration `json:"poll_interval"`

@@ -1,5 +1,3 @@
-// Package catalog 聚合注册中心服务目录中的自描述路由（v0.3）：
-// 服务注册实例元数据 gateway.routes 声明路径前缀，网关轮询目录自动生成路由，新服务上线零网关配置。
 package catalog
 
 import (
@@ -21,15 +19,15 @@ import (
 )
 
 // RoutesMetaKey 实例元数据中声明路由前缀列表的键（逗号分隔多个前缀）。
-const RoutesMetaKey = "gateway.routes"
+const RoutesMetaKey = "gateway_routes"
 
 // LBMetaKey 实例元数据中声明负载均衡算法的键（缺省 round_robin）。
-const LBMetaKey = "gateway.lb"
+const LBMetaKey = "gateway_lb"
 
 // Lister 服务目录列表器：返回健康实例按服务名分组（Consul 实现见 NewConsulLister）。
 type Lister func(ctx context.Context) (map[string][]*registry.ServiceInstance, error)
 
-// Catalog 服务目录聚合器：轮询目录，聚合 gateway.routes 元数据生成路由配置，变化时回调。
+// Catalog 服务目录聚合器：轮询目录，聚合 gateway_routes 元数据生成路由配置，变化时回调。
 type Catalog struct {
 	// lister 目录列表器。
 	lister Lister
@@ -39,8 +37,10 @@ type Catalog struct {
 	interval time.Duration
 	// logger 日志。
 	logger *slog.Logger
-	// mu 保护 last 并发读写。
+	// mu 保护首次查询状态和上次路由指纹。
 	mu sync.Mutex
+	// polled 表示已成功查询过目录，首次空目录也需要发布。
+	polled bool
 	// last 上次路由配置指纹（变更检测）。
 	last string
 }
@@ -55,7 +55,7 @@ func New(lister Lister, prefixes []string, interval time.Duration, logger *slog.
 	}
 }
 
-// Run 启动轮询循环（ctx 结束退出）；生成的路由配置发生变化时以 fn 回调。
+// Run 启动轮询循环（ctx 结束退出）；首次成功查询及之后的路由变更均通过 fn 发布。
 func (c *Catalog) Run(ctx context.Context, fn func(routes []config.Route)) {
 	ticker := time.NewTicker(c.interval)
 	defer ticker.Stop()
@@ -76,7 +76,7 @@ func (c *Catalog) Run(ctx context.Context, fn func(routes []config.Route)) {
 	}
 }
 
-// poll 拉取目录并生成路由配置；changed 表示与上次相比发生变化。
+// poll 拉取目录并生成路由配置；首次成功查询或路由配置变化时标记 changed。
 func (c *Catalog) poll(ctx context.Context) (routes []config.Route, changed bool, err error) {
 	services, err := c.lister(ctx)
 	if err != nil {
@@ -98,9 +98,10 @@ func (c *Catalog) poll(ctx context.Context) (routes []config.Route, changed bool
 	fingerprint := fingerprintOf(routes)
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if fingerprint == c.last {
+	if c.polled && fingerprint == c.last {
 		return routes, false, nil
 	}
+	c.polled = true
 	c.last = fingerprint
 	return routes, true, nil
 }

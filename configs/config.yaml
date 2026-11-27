@@ -24,8 +24,10 @@ registry:
     address: 192.168.60.83:8500
     scheme: http
     token: "${REGISTRY_TOKEN}"
+    # 自注册并通过 Consul 健康实例接流时开启，Consul 会检查 /readyz
+    # health_check: true
 
-# 服务自描述路由聚合（v0.3），路由只转发到 gateway.routes 中声明对应前缀的健康实例
+# 服务自描述路由聚合（v0.3），路由只转发到 gateway_routes 中声明对应前缀的健康实例
 catalog:
   enabled: false
   # 仅查询命中这些服务名前缀的健康实例（空为查询全部服务）

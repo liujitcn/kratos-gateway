@@ -1,5 +1,3 @@
-// Package builder 负责把配置装配为运行时路由表：谓词、过滤器、转发目标与处理器链。
-// 静态路由在前、catalog 聚合路由在后（同深度前缀重叠时静态路由优先）。
 package builder
 
 import (

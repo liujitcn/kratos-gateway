@@ -1,5 +1,3 @@
-// Package route 定义网关核心路由模型：Route/Target/Predicate/Filter 接口与路由器。
-// 过滤器用标准 http.Handler 装饰链（链尾收敛到转发器），与 net/http 生态零摩擦。
 package route
 
 import (

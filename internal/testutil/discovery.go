@@ -1,4 +1,3 @@
-// Package testutil 提供测试用的服务发现与监视器桩实现。
 package testutil
 
 import (

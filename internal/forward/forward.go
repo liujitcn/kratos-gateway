@@ -1,6 +1,3 @@
-// Package forward 实现过滤器链尾的转发器：选择节点、反向代理转发、失败重试与可观测埋点。
-// 反向代理规范：全局 FlushInterval=-1（SSE/WS 透传）、SetXForwarded 转发头、保留原始 Host、
-// X-GW-Upstream 响应头标注实际命中节点；禁止全局 Read/WriteTimeout 由 Server 层保证。
 package forward
 
 import (

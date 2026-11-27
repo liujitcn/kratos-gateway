@@ -14,6 +14,6 @@ WORKDIR /app
 COPY --from=builder /out/gateway /app/gateway
 COPY configs/config.yaml /app/configs/config.yaml
 EXPOSE 8080
-HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=3s CMD wget -qO- http://127.0.0.1:8080/readyz || exit 1
 ENTRYPOINT ["/app/gateway"]
 CMD ["-conf", "/app/configs/config.yaml"]

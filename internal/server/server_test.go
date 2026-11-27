@@ -537,6 +537,58 @@ func hostPortOf(_ *testing.T, srv *httptest.Server) string {
 	return srv.URL[len("http://"):]
 }
 
+// TestIntegrationReadiness 验证就绪探针在发现匹配的上游后放行，并在节点消失时拒绝接流。
+func TestIntegrationReadiness(t *testing.T) {
+	up, _ := upstreamServer(t, "healthy")
+	gw, _, disc := gatewayHandler(t, []config.Route{
+		{ID: "demo", Predicates: []config.Predicate{{Path: "/a"}}, Target: config.Target{Service: "demo-service", Version: "v2"}},
+	})
+	probe := func(path string) int {
+		w := httptest.NewRecorder()
+		gw.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		return w.Code
+	}
+	if got := probe("/healthz"); got != http.StatusOK {
+		t.Fatalf("等待上游时进程仍应存活: %d", got)
+	}
+	if got := probe("/readyz"); got != http.StatusServiceUnavailable {
+		t.Fatalf("没有匹配上游时应返回 503: %d", got)
+	}
+	for _, version := range []string{"v2", "v1"} {
+		disc.Push("demo-service", []*registry.ServiceInstance{{ID: up.URL, Version: version, Endpoints: []string{up.URL}}})
+		want := http.StatusServiceUnavailable
+		if version == "v2" {
+			want = http.StatusOK
+		}
+		deadline := time.Now().Add(time.Second)
+		for probe("/readyz") != want {
+			if time.Now().After(deadline) {
+				t.Fatalf("版本 %s 的就绪状态应为 %d", version, want)
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}
+}
+
+// TestReadinessCatalogAndDrain 验证目录首个快照发布前和开始排空后均不接流。
+func TestReadinessCatalogAndDrain(t *testing.T) {
+	gw := New(&config.Config{Catalog: config.Catalog{Enabled: true}}, route.NewRouter(), nil, slog.New(slog.DiscardHandler))
+	check := func(path string, want int) {
+		t.Helper()
+		w := httptest.NewRecorder()
+		gw.ServeHTTP(w, httptest.NewRequest(http.MethodGet, path, nil))
+		if w.Code != want {
+			t.Fatalf("%s 状态为 %d，期望 %d", path, w.Code, want)
+		}
+	}
+	check("/readyz", http.StatusServiceUnavailable)
+	gw.MarkCatalogReady()
+	check("/readyz", http.StatusOK)
+	gw.BeginDrain()
+	check("/readyz", http.StatusServiceUnavailable)
+	check("/healthz", http.StatusOK)
+}
+
 // TestIntegrationGracefulShutdown 验证实际网关监听器在停机时等待在途 HTTP 请求完成。
 func TestIntegrationGracefulShutdown(t *testing.T) {
 	entered := make(chan struct{})

@@ -1,5 +1,3 @@
-// Package server 组装网关 HTTP 服务：全局过滤器链、路由分发、管理端点与优雅停机。
-// 保留端点（/gw-stats、/metrics、/healthz）直连响应，不经全局链与路由匹配。
 package server
 
 import (
@@ -10,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 
 	"github.com/liujitcn/kratos-gateway/internal/config"
 	"github.com/liujitcn/kratos-gateway/internal/filter"
@@ -32,6 +31,10 @@ type Server struct {
 	gateway http.Handler
 	// logger 日志。
 	logger *slog.Logger
+	// catalogReady 表示已发布服务目录的首个路由快照。
+	catalogReady atomic.Bool
+	// shuttingDown 表示已开始停机，通知接流方摘除实例。
+	shuttingDown atomic.Bool
 	// upgradeMu 保护升级请求的登记、排空通知和停机状态。
 	upgradeMu    sync.Mutex
 	upgrades     map[net.Conn]struct{}
@@ -76,8 +79,19 @@ func (s *Server) Serve(ln net.Listener) error {
 	return nil
 }
 
+// MarkCatalogReady 记录首个成功的目录快照已发布到路由表。
+func (s *Server) MarkCatalogReady() {
+	s.catalogReady.Store(true)
+}
+
+// BeginDrain 将就绪探针切为不可用，等待接流方摘除实例。
+func (s *Server) BeginDrain() {
+	s.shuttingDown.Store(true)
+}
+
 // Stop 在同一期限内排空 HTTP 请求和升级连接，超时后强制断开剩余连接。
 func (s *Server) Stop() error {
+	s.BeginDrain()
 	ctx, cancel := context.WithTimeout(context.Background(), s.cfg.Server.ShutdownTimeout.Std())
 	defer cancel()
 	err := s.http.Shutdown(ctx)
@@ -120,6 +134,8 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		s.handleStats(w, r)
 	case "/metrics":
 		s.handleMetrics(w, r)
+	case "/readyz":
+		s.handleReadiness(w)
 	case "/healthz":
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
@@ -135,6 +151,21 @@ func (s *Server) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		s.gateway.ServeHTTP(w, r)
 	}
+}
+
+// handleReadiness 判断实例是否可以接流，并检查已发布发现路由的节点快照。
+func (s *Server) handleReadiness(w http.ResponseWriter) {
+	if s.shuttingDown.Load() || (s.cfg.Catalog.Enabled && !s.catalogReady.Load()) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		return
+	}
+	for _, r := range s.router.Routes() {
+		if target, ok := r.Target.(*upstream.DiscoveryTarget); ok && !target.HasDiscoveredNodes() {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // trackUpgrade 在连接脱离 net/http 管理前登记升级请求。

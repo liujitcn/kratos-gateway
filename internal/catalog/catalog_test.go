@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/go-kratos/kratos/v3/registry"
+	"github.com/go-kratos/kratos/v3/selector"
 
 	"github.com/liujitcn/kratos-gateway/internal/config"
 )
@@ -24,8 +25,8 @@ func TestCatalogAggregate(t *testing.T) {
 	services := map[string][]*registry.ServiceInstance{
 		"bi-service": {
 			{ID: "bi-bad", Name: "bi-service", Metadata: map[string]string{RoutesMetaKey: "/bad-peer", LBMetaKey: "unsupported"}},
-			{ID: "bi-1", Name: "bi-service", Metadata: map[string]string{"gateway.routes": "/api/v1/bi,/api/v1/report"}},
-			{ID: "bi-2", Name: "bi-service", Metadata: map[string]string{"gateway.routes": "/api/v1/bi", "gateway.lb": "wrr"}},
+			{ID: "bi-1", Name: "bi-service", Metadata: map[string]string{RoutesMetaKey: "/api/v1/bi,/api/v1/report"}},
+			{ID: "bi-2", Name: "bi-service", Metadata: map[string]string{RoutesMetaKey: "/api/v1/bi", LBMetaKey: "wrr"}},
 		},
 		"plain-service": {
 			{ID: "p-1", Name: "plain-service", Metadata: map[string]string{"other": "x"}},
@@ -66,11 +67,29 @@ func TestCatalogAggregate(t *testing.T) {
 	}
 }
 
+// TestCatalogConsulMetadata 验证路由聚合与节点筛选只读取下划线元数据键。
+func TestCatalogConsulMetadata(t *testing.T) {
+	current := &registry.ServiceInstance{Metadata: map[string]string{
+		"gateway_routes": "/current",
+		"gateway.lb":     "unsupported",
+	}}
+	legacy := &registry.ServiceInstance{Metadata: map[string]string{"gateway.routes": "/legacy"}}
+	routes := routesOf("app", []*registry.ServiceInstance{current, legacy}, slog.New(slog.DiscardHandler))
+	if len(routes) != 1 || routes[0].Predicates[0].Path != "/current" || routes[0].Target.LB != "round_robin" {
+		t.Errorf("应忽略带点的元数据键，并使用默认负载均衡算法: %+v", routes)
+	}
+	currentNode := selector.NewNode("http", "127.0.0.1:8080", current)
+	legacyNode := selector.NewNode("http", "127.0.0.1:8081", legacy)
+	if !RouteNodeMatcher("/current")(currentNode) || RouteNodeMatcher("/legacy")(legacyNode) {
+		t.Error("节点筛选应只读取下划线元数据键")
+	}
+}
+
 // TestCatalogServicePrefix 验证服务名前缀过滤。
 func TestCatalogServicePrefix(t *testing.T) {
 	services := map[string][]*registry.ServiceInstance{
-		"app-a":   {{ID: "a", Name: "app-a", Metadata: map[string]string{"gateway.routes": "/a"}}},
-		"infra-b": {{ID: "b", Name: "infra-b", Metadata: map[string]string{"gateway.routes": "/b"}}},
+		"app-a":   {{ID: "a", Name: "app-a", Metadata: map[string]string{RoutesMetaKey: "/a"}}},
+		"infra-b": {{ID: "b", Name: "infra-b", Metadata: map[string]string{RoutesMetaKey: "/b"}}},
 	}
 	c := New(fakeLister(services), []string{"app-"}, 20*time.Millisecond, slog.New(slog.DiscardHandler))
 	routes, _, err := c.poll(context.Background())
@@ -82,7 +101,7 @@ func TestCatalogServicePrefix(t *testing.T) {
 	}
 }
 
-// TestCatalogRun 验证轮询循环在目录变化时回调。
+// TestCatalogRun 验证轮询发布首次空目录和后续目录变化。
 func TestCatalogRun(t *testing.T) {
 	var mu sync.Mutex
 	current := map[string][]*registry.ServiceInstance{}
@@ -98,9 +117,18 @@ func TestCatalogRun(t *testing.T) {
 	defer cancel()
 	go c.Run(ctx, func(routes []config.Route) { got <- routes })
 
-	// 声明路由的服务出现后触发回调（无声明服务不触发）
+	select {
+	case routes := <-got:
+		if routes == nil || len(routes) != 0 {
+			t.Errorf("首次成功查询应发布空目录: %+v", routes)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("首次成功查询未发布空目录")
+	}
+
+	// 声明路由的服务出现后触发回调。
 	mu.Lock()
-	current = map[string][]*registry.ServiceInstance{"bi": {{ID: "bi", Metadata: map[string]string{"gateway.routes": "/bi"}}}}
+	current = map[string][]*registry.ServiceInstance{"bi": {{ID: "bi", Metadata: map[string]string{RoutesMetaKey: "/bi"}}}}
 	mu.Unlock()
 
 	select {
