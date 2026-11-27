@@ -1,0 +1,111 @@
+# kratos-gateway 配置示例（完整特性）
+# 加载时环境变量占位符（美元符+花括号包变量名）从环境变量展开；未设置时启动报错快速暴露，token 等敏感项不落盘。
+# 占位符只在 YAML 字符串值中展开。
+
+server:
+  addr: :8080
+  # 请求头读取超时（防 slowloris；禁止设置全局 Read/WriteTimeout，保 SSE/WS 长连接）
+  read_header_timeout: 10s
+  # 空闲连接超时
+  idle_timeout: 120s
+  # 优雅停机排空超时，超时后强制断开剩余连接
+  shutdown_timeout: 30s
+  # /gw-stats 统计端点（包含内网拓扑，默认关闭）
+  stats: false
+  # /metrics Prometheus 端点
+  metrics: true
+  # 启用后在监听成功时使用实际端口自注册（默认关闭）
+  register: false
+
+# 注册中心配置（与 kratos-admin configs/*/registry.yaml 同构）
+registry:
+  type: consul
+  consul:
+    address: 192.168.60.83:8500
+    scheme: http
+    token: "${REGISTRY_TOKEN}"
+
+# 服务自描述路由聚合（v0.3），路由只转发到 gateway.routes 中声明对应前缀的健康实例
+catalog:
+  enabled: false
+  # 仅查询命中这些服务名前缀的健康实例（空为查询全部服务）
+  service_prefixes: []
+  # 目录轮询间隔
+  poll_interval: 5s
+
+# 静态路由表（段前缀匹配：/api/v1/base 命中自身与子路径，不命中 /api/v1/base2；
+# 多路由前缀重叠时最长前缀优先，同深度按声明顺序）
+routes:
+  - id: admin-api
+    predicates:
+      - path: /api/v1/base
+    target:
+      service: kratos-admin          # NormalizeForRegistry 后查询
+      scheme: http                   # 从实例 Endpoints 中筛选的 scheme
+      lb: round_robin                # round_robin | wrr
+      # 连接类错误重试次数（非负数，默认 1）。仅 GET/HEAD/OPTIONS/TRACE 且请求体为空或可重放时生效
+      # max_retry: 1
+      # 同一服务发现上游池共享熔断参数，显式配置须一致（默认 5 次 / 10s）
+      # breaker:
+      #   failure_threshold: 5
+      #   open_duration: 10s
+
+  - id: admin-api-events             # SSE/流式无需专属 filter：FlushInterval=-1 全局生效
+    predicates:
+      - path: /events
+    target:
+      service: kratos-admin
+      scheme: http
+      lb: round_robin
+      # 连接级实例粘性（设计 11.3），同一客户端连接按上游池固定节点，SSE 多实例部署时按需开启
+      # sticky: true
+
+  - id: bi-service
+    predicates:
+      - path: /api/v1/bi
+      - method: [GET, POST]          # 可选：方法谓词（命中任一）
+    filters:
+      # 路径改写：命中 prefix 段前缀的路径替换为 replacement 前缀
+      - name: rewrite
+        args: { prefix: /api/v1/bi, replacement: /api/bi }
+      # 请求头注入（转发前为上游请求设置固定头）
+      # - name: add-header
+      #   args: { key: X-GW-Route, value: bi }
+      # 覆盖同名响应头，也适用于 WebSocket 升级响应
+      # - name: response-header
+      #   args: { key: X-GW-Served-By, value: kratos-gateway }
+      # 令牌桶限流：rate 每秒令牌数、burst 桶容量（超限回 429）
+      # - name: rate-limit
+      #   args: { rate: 100, burst: 50 }
+      # 请求超时（SSE/WS 长连接路由勿配置）
+      # - name: timeout
+      #   args: { duration: 30s }
+    target:
+      service: bi-service
+      lb: wrr                        # wrr：平滑加权轮询，权重读实例 Metadata["weight"]
+
+  - id: static-mock                  # 静态目标（联调/降级）：非空时忽略 service
+    predicates:
+      - path: /mock
+    target:
+      urls:
+        - http://127.0.0.1:9001
+        - http://127.0.0.1:9002
+      lb: round_robin
+
+  # 灰度示例（v0.3），同组路由按权重切分流量并使用相同的 key（请求头名，缺省客户端 IP）
+  # - id: gray-stable
+  #   predicates:
+  #     - path: /api/v1/workflow
+  #     - weight: { group: wf-gray, weight: 80, key: X-User-Id }
+  #   target:
+  #     service: workflow-service
+  #     version: v1                   # 稳定组只选择旧版本实例
+  # - id: gray-canary
+  #   predicates:
+  #     - path: /api/v1/workflow
+  #     - weight: { group: wf-gray, weight: 20, key: X-User-Id }
+  #   target:
+  #     service: workflow-service
+  #     version: v2                   # 灰度组只选择新版本实例
+  #     lb: wrr                       # weight 元数据控制 v2 实例之间的分流
